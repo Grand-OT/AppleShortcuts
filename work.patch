@@ -1,0 +1,1584 @@
+commit 1635f8d59e650d38666d32100e35afdfa06fc637
+Author: Yaroslav Popov <super.ot96@yandex.ru>
+Date:   Thu May 20 21:52:21 2021 +0700
+
+    Presentation version 1
+
+diff --git a/ios/chrome/app/app_startup_parameters.h b/ios/chrome/app/app_startup_parameters.h
+index c29a76ab40278..e6e57f12c9a91 100644
+--- a/ios/chrome/app/app_startup_parameters.h
++++ b/ios/chrome/app/app_startup_parameters.h
+@@ -17,6 +17,7 @@ enum NTPTabOpeningPostOpeningAction {
+   START_VOICE_SEARCH,
+   START_QR_CODE_SCANNER,
+   OPEN_READING_LIST,
++  SEARCH_IN_PAGE,
+   FOCUS_OMNIBOX,
+   NTP_TAB_OPENING_POST_OPENING_ACTION_COUNT,
+ };
+@@ -41,6 +42,10 @@ class GURL;
+ // as |externalURL|.
+ @property(nonatomic, readonly, assign) const std::vector<GURL>& URLs;
+ 
++@property(nonatomic, readwrite, assign) std::vector<GURL> ReadingListURLs;
++
++@property(nonatomic, readwrite, copy) NSString* textToSearch;
++
+ // The URL query string parameters in the case that the app was launched as a
+ // result of Universal Link navigation. The map associates query string
+ // parameters with their corresponding value.
+diff --git a/ios/chrome/app/application_delegate/user_activity_handler.mm b/ios/chrome/app/application_delegate/user_activity_handler.mm
+index a8649e5f45ceb..62c4db88122ec 100644
+--- a/ios/chrome/app/application_delegate/user_activity_handler.mm
++++ b/ios/chrome/app/application_delegate/user_activity_handler.mm
+@@ -25,6 +25,7 @@
+ #import "ios/chrome/app/intents/OpenInChromeIntent.h"
+ #import "ios/chrome/app/intents/SearchInChromeIntent.h"
+ #import "ios/chrome/app/intents/AddToReadingListIntent.h"
++#import "ios/chrome/app/intents/SearchInPageIntent.h"
+ #import "ios/chrome/app/spotlight/actions_spotlight_manager.h"
+ #import "ios/chrome/app/spotlight/spotlight_util.h"
+ #include "ios/chrome/app/startup/chrome_app_startup_parameters.h"
+@@ -35,7 +36,6 @@
+ #import "ios/chrome/browser/main/browser_list_factory.h"
+ #include "ios/chrome/browser/metrics/first_user_action_recorder.h"
+ #import "ios/chrome/browser/policy/policy_util.h"
+-//#import "ios/chrome/browser/reading_list/offline_page_tab_helper.h"
+ #include "ios/chrome/browser/reading_list/reading_list_model_factory.h"
+ #include "ios/chrome/browser/search_engines/template_url_service_factory.h"
+ #import "ios/chrome/browser/u2f/u2f_tab_helper.h"
+@@ -67,6 +67,7 @@
+ NSString* const kSiriShortcutSearchInChrome = @"SearchInChromeIntent";
+ NSString* const kSiriShortcutOpenInIncognito = @"OpenInChromeIncognitoIntent";
+ NSString* const kSiriShortcutAddToReadingList = @"AddToReadingListIntent";
++NSString* const kSiriShortcutSearchInPage = @"SearchInPageIntent";
+ 
+ // Constants for compatible mode for user activities.
+ NSString* const kRegularMode = @"RegularMode";
+@@ -82,7 +83,8 @@
+ 
+ // Returns the compatible mode array for an user activity.
+ NSArray* CompatibleModeForActivityType(NSString* activityType) {
+-  if ([activityType isEqualToString: kSiriShortcutAddToReadingList] ||
++  if ([activityType isEqualToString: kSiriShortcutSearchInPage] ||
++      [activityType isEqualToString: kSiriShortcutAddToReadingList] ||
+       [activityType isEqualToString: CSSearchableItemActionType] ||
+       [activityType isEqualToString: kShortcutNewSearch] ||
+       [activityType isEqualToString: kShortcutVoiceSearch] ||
+@@ -180,6 +182,34 @@ + (BOOL)continueUserActivity:(NSUserActivity*)userActivity
+       });
+       return YES;
+     }
++  } else if([userActivity.activityType
++             isEqualToString:kSiriShortcutSearchInPage]) {
++      base::RecordAction(UserMetricsAction("IOSLaunchedBySearchInPageIntent"));
++      
++      SearchInPageIntent* intent =
++                  base::mac::ObjCCastStrict<SearchInPageIntent>(
++                  userActivity.interaction.intent);
++      
++      if (!intent) {
++          return NO;
++      }
++      
++      if (!intent.query || !intent.URL) {
++          return NO;
++      }
++      
++      // call search
++      
++      GURL webpageGURL(net::GURLWithNSURL(base::mac::ObjCCastStrict<NSURL>(intent.URL)));
++      
++      AppStartupParameters* startupParams =
++            [[AppStartupParameters alloc] initWithExternalURL:webpageGURL completeURL:webpageGURL];
++        
++      startupParams.postOpeningAction = SEARCH_IN_PAGE;
++      startupParams.textToSearch = [intent.query copy];
++      
++      [connectionInformation setStartupParameters:startupParams];
++        
+   } else if ([userActivity.activityType
+               isEqualToString:kSiriShortcutAddToReadingList]) {
+     base::RecordAction(UserMetricsAction("IOSLaunchedByAddToReadingListIntent"));
+@@ -198,21 +228,11 @@ + (BOOL)continueUserActivity:(NSUserActivity*)userActivity
+   
+       std::vector<GURL> URLs = createGURLVectorFromIntentURLs(intent.url);
+ 
+-      ReadingListModel* readingModel =
+-          ReadingListModelFactory::GetForBrowserState(browserState);
+-      
+-      if (readingModel && readingModel->loaded())
+-          for (auto& URL : URLs){
+-          NSString* title = @"New item";
+-          readingModel->AddEntry(URL, base::SysNSStringToUTF8(title),
+-                                 reading_list::ADDED_VIA_CURRENT_APP);
+-          } else {
+-              sleep(1000);
+-      }
+     AppStartupParameters* startupParams =
+           [[AppStartupParameters alloc] initWithExternalURL:GURL(kChromeUINewTabURL) completeURL:GURL(kChromeUINewTabURL)];
+       
+-      //startupParams.postOpeningAction = OPEN_READING_LIST;
++    startupParams.postOpeningAction = OPEN_READING_LIST;
++    startupParams.ReadingListURLs = std::move(URLs);
+ 
+    [connectionInformation setStartupParameters:startupParams];
+       
+diff --git a/ios/chrome/app/intents/BUILD.gn b/ios/chrome/app/intents/BUILD.gn
+index 14b0e4537ec09..b9b9ca38c7a4f 100644
+--- a/ios/chrome/app/intents/BUILD.gn
++++ b/ios/chrome/app/intents/BUILD.gn
+@@ -10,6 +10,7 @@ intent_definition("intents") {
+     "OpenInChromeIntent",
+     "OpenInChromeIncognitoIntent",
+     "SearchInChromeIntent",
+-    "AddToReadingListIntent"
++    "AddToReadingListIntent",
++    "SearchInPageIntent"
+   ]
+ }
+diff --git a/ios/chrome/app/intents/Intents.intentdefinition b/ios/chrome/app/intents/Intents.intentdefinition
+index 193cf7c4bca3a..f898a8d82f059 100644
+--- a/ios/chrome/app/intents/Intents.intentdefinition
++++ b/ios/chrome/app/intents/Intents.intentdefinition
+@@ -9,7 +9,7 @@
+ 	<key>INIntentDefinitionNamespace</key>
+ 	<string>Oi5136</string>
+ 	<key>INIntentDefinitionSystemVersion</key>
+-	<string>19H524</string>
++	<string>19H1030</string>
+ 	<key>INIntentDefinitionToolsBuildVersion</key>
+ 	<string>12D4e</string>
+ 	<key>INIntentDefinitionToolsVersion</key>
+@@ -372,8 +372,6 @@
+ 					</array>
+ 					<key>INIntentParameterSupportsMultipleValues</key>
+ 					<true/>
+-					<key>INIntentParameterSupportsResolution</key>
+-					<true/>
+ 					<key>INIntentParameterTag</key>
+ 					<integer>10</integer>
+ 					<key>INIntentParameterType</key>
+@@ -405,6 +403,144 @@
+ 			<key>INIntentVerb</key>
+ 			<string>Do</string>
+ 		</dict>
++		<dict>
++			<key>INIntentCategory</key>
++			<string>generic</string>
++			<key>INIntentConfigurable</key>
++			<true/>
++			<key>INIntentDescription</key>
++			<string>Searches text query in defined webpage</string>
++			<key>INIntentDescriptionID</key>
++			<string>SH3VLr</string>
++			<key>INIntentLastParameterTag</key>
++			<integer>3</integer>
++			<key>INIntentManagedParameterCombinations</key>
++			<dict>
++				<key>URL,query</key>
++				<dict>
++					<key>INIntentParameterCombinationSupportsBackgroundExecution</key>
++					<true/>
++					<key>INIntentParameterCombinationTitle</key>
++					<string>Search ${query} in ${URL}</string>
++					<key>INIntentParameterCombinationTitleID</key>
++					<string>pVT0bM</string>
++					<key>INIntentParameterCombinationUpdatesLinked</key>
++					<true/>
++				</dict>
++			</dict>
++			<key>INIntentName</key>
++			<string>SearchInPage</string>
++			<key>INIntentParameterCombinations</key>
++			<dict>
++				<key>URL,query</key>
++				<dict>
++					<key>INIntentParameterCombinationIsLinked</key>
++					<true/>
++					<key>INIntentParameterCombinationSupportsBackgroundExecution</key>
++					<true/>
++					<key>INIntentParameterCombinationTitle</key>
++					<string>Search ${query} in ${URL}</string>
++					<key>INIntentParameterCombinationTitleID</key>
++					<string>O5sNAK</string>
++				</dict>
++			</dict>
++			<key>INIntentParameters</key>
++			<array>
++				<dict>
++					<key>INIntentParameterConfigurable</key>
++					<true/>
++					<key>INIntentParameterDisplayName</key>
++					<string>URL</string>
++					<key>INIntentParameterDisplayNameID</key>
++					<string>A5Ttkc</string>
++					<key>INIntentParameterDisplayPriority</key>
++					<integer>1</integer>
++					<key>INIntentParameterName</key>
++					<string>URL</string>
++					<key>INIntentParameterPromptDialogs</key>
++					<array>
++						<dict>
++							<key>INIntentParameterPromptDialogCustom</key>
++							<true/>
++							<key>INIntentParameterPromptDialogType</key>
++							<string>Configuration</string>
++						</dict>
++						<dict>
++							<key>INIntentParameterPromptDialogCustom</key>
++							<true/>
++							<key>INIntentParameterPromptDialogType</key>
++							<string>Primary</string>
++						</dict>
++					</array>
++					<key>INIntentParameterTag</key>
++					<integer>2</integer>
++					<key>INIntentParameterType</key>
++					<string>URL</string>
++				</dict>
++				<dict>
++					<key>INIntentParameterConfigurable</key>
++					<true/>
++					<key>INIntentParameterDisplayName</key>
++					<string>Query</string>
++					<key>INIntentParameterDisplayNameID</key>
++					<string>QRvZea</string>
++					<key>INIntentParameterDisplayPriority</key>
++					<integer>2</integer>
++					<key>INIntentParameterMetadata</key>
++					<dict>
++						<key>INIntentParameterMetadataCapitalization</key>
++						<string>Sentences</string>
++						<key>INIntentParameterMetadataDefaultValueID</key>
++						<string>Gs9R7n</string>
++					</dict>
++					<key>INIntentParameterName</key>
++					<string>query</string>
++					<key>INIntentParameterPromptDialogs</key>
++					<array>
++						<dict>
++							<key>INIntentParameterPromptDialogCustom</key>
++							<true/>
++							<key>INIntentParameterPromptDialogType</key>
++							<string>Configuration</string>
++						</dict>
++						<dict>
++							<key>INIntentParameterPromptDialogCustom</key>
++							<true/>
++							<key>INIntentParameterPromptDialogType</key>
++							<string>Primary</string>
++						</dict>
++					</array>
++					<key>INIntentParameterTag</key>
++					<integer>3</integer>
++					<key>INIntentParameterType</key>
++					<string>String</string>
++				</dict>
++			</array>
++			<key>INIntentResponse</key>
++			<dict>
++				<key>INIntentResponseCodes</key>
++				<array>
++					<dict>
++						<key>INIntentResponseCodeName</key>
++						<string>success</string>
++						<key>INIntentResponseCodeSuccess</key>
++						<true/>
++					</dict>
++					<dict>
++						<key>INIntentResponseCodeName</key>
++						<string>failure</string>
++					</dict>
++				</array>
++			</dict>
++			<key>INIntentTitle</key>
++			<string>Search In Page</string>
++			<key>INIntentTitleID</key>
++			<string>ALNa8w</string>
++			<key>INIntentType</key>
++			<string>Custom</string>
++			<key>INIntentVerb</key>
++			<string>Do</string>
++		</dict>
+ 	</array>
+ 	<key>INTypes</key>
+ 	<array/>
+diff --git a/ios/chrome/browser/find_in_page/find_in_page_controller.mm b/ios/chrome/browser/find_in_page/find_in_page_controller.mm
+index 3f17e089e884a..59c4f0cace3b7 100644
+--- a/ios/chrome/browser/find_in_page/find_in_page_controller.mm
++++ b/ios/chrome/browser/find_in_page/find_in_page_controller.mm
+@@ -159,9 +159,7 @@ - (void)logFindInPageSearchUKM {
+ 
+ - (void)findStringInPage:(NSString*)query {
+   // Keep track of whether a find is in progress so to avoid running
+-  // JavaScript during disable if unnecessary.
+-  _findStringStarted = YES;
+-  // Save the query in the model before searching. TODO:(crbug.com/963908):
++  // JavaScript during disable if unnecessary.  _findStringStarted = YES;d  // Save the query in the model before searching. TODO:(crbug.com/963908):
+   // Remove as part of refactoring.
+   [self.findInPageModel updateQuery:query matches:0];
+   _findInPageManager->Find(query, web::FindInPageOptions::FindInPageSearch);
+diff --git a/ios/chrome/browser/ui/main/scene_controller.mm b/ios/chrome/browser/ui/main/scene_controller.mm
+index d6d9291fb3e2c..5253534295cf7 100644
+--- a/ios/chrome/browser/ui/main/scene_controller.mm
++++ b/ios/chrome/browser/ui/main/scene_controller.mm
+@@ -3,9 +3,14 @@
+ // found in the LICENSE file.
+ 
+ #import "ios/chrome/browser/ui/main/scene_controller.h"
++#import "ios/chrome/browser/ui/browser_view/browser_coordinator.h"
++#import "ios/chrome/browser/ui/main/browser_view_wrangler.h"
++#import "ios/chrome/browser/ui/commands/find_in_page_commands.h"
+ 
+ #import <MaterialComponents/MaterialSnackbar.h>
+ 
++#include "ios/chrome/browser/find_in_page/find_tab_helper.h"
++
+ #include "base/callback_helpers.h"
+ #include "base/i18n/message_formatter.h"
+ #import "base/ios/ios_util.h"
+@@ -17,6 +22,7 @@
+ #include "components/infobars/core/infobar_manager.h"
+ #include "components/prefs/pref_service.h"
+ #import "components/previous_session_info/previous_session_info.h"
++#include "components/reading_list/core/reading_list_model.h"
+ #include "components/signin/public/base/signin_metrics.h"
+ #include "components/signin/public/identity_manager/identity_manager.h"
+ #include "components/url_formatter/url_formatter.h"
+@@ -45,6 +51,7 @@
+ #include "ios/chrome/browser/crash_report/crash_keys_helper.h"
+ #include "ios/chrome/browser/crash_report/crash_report_helper.h"
+ #import "ios/chrome/browser/crash_report/crash_restore_helper.h"
++#import "ios/chrome/browser/find_in_page/find_tab_helper.h"
+ #import "ios/chrome/browser/first_run/first_run.h"
+ #include "ios/chrome/browser/geolocation/omnibox_geolocation_controller.h"
+ #import "ios/chrome/browser/geolocation/omnibox_geolocation_controller.h"
+@@ -56,6 +63,7 @@
+ #include "ios/chrome/browser/ntp/features.h"
+ #import "ios/chrome/browser/policy/policy_util.h"
+ #import "ios/chrome/browser/policy/policy_watcher_browser_agent.h"
++#include "ios/chrome/browser/reading_list/reading_list_model_factory.h"
+ #include "ios/chrome/browser/screenshot/screenshot_delegate.h"
+ #import "ios/chrome/browser/signin/authentication_service.h"
+ #import "ios/chrome/browser/signin/authentication_service_factory.h"
+@@ -119,6 +127,8 @@
+ #import "net/base/mac/url_conversions.h"
+ #include "ui/base/l10n/l10n_util.h"
+ 
++
++
+ #if !defined(__has_feature) || !__has_feature(objc_arc)
+ #error "This file requires ARC support."
+ #endif
+@@ -1913,16 +1923,39 @@ - (ProceduralBlock)completionBlockForTriggeringAction:
+         [QRHandler showQRScanner];
+       };
+     case OPEN_READING_LIST:
+-          return ^{
+-              if (!self.currentInterface.browser) {
+-                  return;
++      return ^{
++          if (!self.currentInterface.browser) {
++              return;
++          }
++          
++          ReadingListModel* readingModel =
++              ReadingListModelFactory::GetForBrowserState(self.currentInterface.browserState);
++          
++          if (readingModel && readingModel->loaded()) {
++              for (auto& URL : _startupParameters.ReadingListURLs) {
++              NSString* title = @"New item";
++              readingModel->AddEntry(URL, base::SysNSStringToUTF8(title),
++                                     reading_list::ADDED_VIA_CURRENT_APP);
+               }
+-              id<BrowserCommands> handler =
+-              HandlerForProtocol(
+-                self.currentInterface.browser->GetCommandDispatcher(),
+-                    BrowserCommands);
+-              [handler showReadingList];
+-          };
++          }
++      };
++    case SEARCH_IN_PAGE:
++      return ^{
++          if (!self.currentInterface.browser) {
++              return;
++          }
++          
++          auto dispatcher =
++              static_cast<id<FindInPageCommands>>(self.currentInterface.browser->GetCommandDispatcher());
++          [dispatcher openFindInPage];
++            self.currentInterface.browser->GetCommandDispatcher();
++          
++          WebStateList* webStateList = self.currentInterface.browser->GetWebStateList();
++          web::WebState* webState = webStateList->GetActiveWebState();
++          
++          FindTabHelper* helper = FindTabHelper::FromWebState(webState);
++          helper->StartFinding(_startupParameters.textToSearch);
++      };
+     case FOCUS_OMNIBOX:
+       return ^{
+         if (!self.currentInterface.browser) {
+@@ -2308,7 +2341,7 @@ - (void)openSelectedTabInMode:(ApplicationModeForTabOpening)tabOpeningTargetMode
+                                                        postOpeningAction]];
+ 
+   // Commands are only allowed on NTP.
+-  DCHECK(IsURLNtp(urlLoadParams.web_params.url) || !startupCompletion);
++  //DCHECK(IsURLNtp(urlLoadParams.web_params.url) || !startupCompletion);
+   ProceduralBlock tabOpenedCompletion = nil;
+   if (startupCompletion && completion) {
+     tabOpenedCompletion = ^{
+diff --git a/log_changes b/log_changes
+new file mode 100644
+index 0000000000000..e41c75b13f31d
+Binary files /dev/null and b/log_changes differ
+diff --git a/log_changes.txt b/log_changes.txt
+new file mode 100644
+index 0000000000000..73eeb157c0705
+--- /dev/null
++++ b/log_changes.txt
+@@ -0,0 +1,571 @@
++commit 6d996111036c9e282da56294b0ed36c22898162e
++Author: Yaroslav Popov <super.ot96@yandex.ru>
++Date:   Wed Apr 21 23:58:49 2021 +0700
++
++    "add to reading list" intent added
++
++diff --git a/components/reading_list/core/reading_list_model_impl.cc b/components/reading_list/core/reading_list_model_impl.cc
++index 20f3153958a3..2c6f9e5dde98 100644
++--- a/components/reading_list/core/reading_list_model_impl.cc
+++++ b/components/reading_list/core/reading_list_model_impl.cc
++@@ -333,9 +333,9 @@ const ReadingListEntry& ReadingListModelImpl::AddEntry(
++     const GURL& url,
++     const std::string& title,
++     reading_list::EntrySource source) {
++-  //DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++-  //DCHECK(loaded());
++-  //DCHECK(IsUrlSupported(url));
+++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+++  DCHECK(loaded());
+++  DCHECK(IsUrlSupported(url));
++   std::unique_ptr<ReadingListModel::ScopedReadingListBatchUpdate>
++       scoped_model_batch_updates = nullptr;
++   if (GetEntryByURL(url)) {
++diff --git a/ios/chrome/app/app_startup_parameters.h b/ios/chrome/app/app_startup_parameters.h
++index c210376088b5..c29a76ab4027 100644
++--- a/ios/chrome/app/app_startup_parameters.h
+++++ b/ios/chrome/app/app_startup_parameters.h
++@@ -16,6 +16,7 @@ enum NTPTabOpeningPostOpeningAction {
++   NO_ACTION = 0,
++   START_VOICE_SEARCH,
++   START_QR_CODE_SCANNER,
+++  OPEN_READING_LIST,
++   FOCUS_OMNIBOX,
++   NTP_TAB_OPENING_POST_OPENING_ACTION_COUNT,
++ };
++diff --git a/ios/chrome/app/application_delegate/user_activity_handler.mm b/ios/chrome/app/application_delegate/user_activity_handler.mm
++index e957b8941528..a8649e5f45ce 100644
++--- a/ios/chrome/app/application_delegate/user_activity_handler.mm
+++++ b/ios/chrome/app/application_delegate/user_activity_handler.mm
++@@ -24,7 +24,7 @@
++ #import "ios/chrome/app/intents/OpenInChromeIncognitoIntent.h"
++ #import "ios/chrome/app/intents/OpenInChromeIntent.h"
++ #import "ios/chrome/app/intents/SearchInChromeIntent.h"
++-#import "ios/chrome/app/intents/OpenGoogleIntent.h"
+++#import "ios/chrome/app/intents/AddToReadingListIntent.h"
++ #import "ios/chrome/app/spotlight/actions_spotlight_manager.h"
++ #import "ios/chrome/app/spotlight/spotlight_util.h"
++ #include "ios/chrome/app/startup/chrome_app_startup_parameters.h"
++@@ -35,7 +35,7 @@
++ #import "ios/chrome/browser/main/browser_list_factory.h"
++ #include "ios/chrome/browser/metrics/first_user_action_recorder.h"
++ #import "ios/chrome/browser/policy/policy_util.h"
++-#import "ios/chrome/browser/reading_list/offline_page_tab_helper.h"
+++//#import "ios/chrome/browser/reading_list/offline_page_tab_helper.h"
++ #include "ios/chrome/browser/reading_list/reading_list_model_factory.h"
++ #include "ios/chrome/browser/search_engines/template_url_service_factory.h"
++ #import "ios/chrome/browser/u2f/u2f_tab_helper.h"
++@@ -66,7 +66,7 @@
++ NSString* const kSiriShortcutOpenInChrome = @"OpenInChromeIntent";
++ NSString* const kSiriShortcutSearchInChrome = @"SearchInChromeIntent";
++ NSString* const kSiriShortcutOpenInIncognito = @"OpenInChromeIncognitoIntent";
++-NSString* const kSiriShortcutOpenGoogle = @"OpenGoogleIntent";
+++NSString* const kSiriShortcutAddToReadingList = @"AddToReadingListIntent";
++ 
++ // Constants for compatible mode for user activities.
++ NSString* const kRegularMode = @"RegularMode";
++@@ -82,7 +82,7 @@
++ 
++ // Returns the compatible mode array for an user activity.
++ NSArray* CompatibleModeForActivityType(NSString* activityType) {
++-  if ([activityType isEqualToString: kSiriShortcutOpenGoogle] ||
+++  if ([activityType isEqualToString: kSiriShortcutAddToReadingList] ||
++       [activityType isEqualToString: CSSearchableItemActionType] ||
++       [activityType isEqualToString: kShortcutNewSearch] ||
++       [activityType isEqualToString: kShortcutVoiceSearch] ||
++@@ -181,34 +181,48 @@ + (BOOL)continueUserActivity:(NSUserActivity*)userActivity
++       return YES;
++     }
++   } else if ([userActivity.activityType
++-              isEqualToString:kSiriShortcutOpenGoogle]) {
++-    //base::RecordAction(UserMetricsAction("IOSLaunchedByOpenGoogleIntent"));
++-    
++-  
++-    NSURL* googleSearchPageNSURL = [NSURL URLWithString:@"https://google.com"];
++-  
++-    std::vector<GURL> URLs;
++-    //URLs.push_back(net::GURLWithNSURL(googleSearchPageNSURL));
+++              isEqualToString:kSiriShortcutAddToReadingList]) {
+++    base::RecordAction(UserMetricsAction("IOSLaunchedByAddToReadingListIntent"));
+++      
+++    AddToReadingListIntent* intent =
+++                base::mac::ObjCCastStrict<AddToReadingListIntent>(
+++                userActivity.interaction.intent);
+++      
+++    if (!intent) {
+++        return NO;
+++    }
+++      
+++    if (!intent.url || intent.url.count == 0) {
+++        return NO;
+++    }
++   
++-    AppStartupParameters* startupParams =
++-          [[AppStartupParameters alloc] initWithURLs:URLs];
+++      std::vector<GURL> URLs = createGURLVectorFromIntentURLs(intent.url);
++ 
++-   [connectionInformation setStartupParameters:startupParams];
++-      
++       ReadingListModel* readingModel =
++           ReadingListModelFactory::GetForBrowserState(browserState);
++-      NSString* title = @"google";
++-      readingModel->AddEntry(net::GURLWithNSURL(googleSearchPageNSURL), base::SysNSStringToUTF8(title),
++-                             reading_list::ADDED_VIA_CURRENT_APP);
++       
+++      if (readingModel && readingModel->loaded())
+++          for (auto& URL : URLs){
+++          NSString* title = @"New item";
+++          readingModel->AddEntry(URL, base::SysNSStringToUTF8(title),
+++                                 reading_list::ADDED_VIA_CURRENT_APP);
+++          } else {
+++              sleep(1000);
+++      }
+++    AppStartupParameters* startupParams =
+++          [[AppStartupParameters alloc] initWithExternalURL:GURL(kChromeUINewTabURL) completeURL:GURL(kChromeUINewTabURL)];
+++      
+++      //startupParams.postOpeningAction = OPEN_READING_LIST;
+++
+++   [connectionInformation setStartupParameters:startupParams];
++       
++-      /*return [self continueUserActivityURLs:URLs
+++      return [self continueUserActivityURLs:URLs
++                      applicationIsActive:applicationIsActive
++                                tabOpener:tabOpener
++                    connectionInformation:connectionInformation
++                       startupInformation:startupInformation
++-       Incognito:NO];*/return YES;
++-      
+++       Incognito:NO];
+++     
++   } else if ([userActivity.activityType
++                  isEqualToString:kSiriShortcutSearchInChrome]) {
++     base::RecordAction(UserMetricsAction("IOSLaunchedBySearchInChromeIntent"));
++diff --git a/ios/chrome/app/intents/BUILD.gn b/ios/chrome/app/intents/BUILD.gn
++index 83914c9084c5..14b0e4537ec0 100644
++--- a/ios/chrome/app/intents/BUILD.gn
+++++ b/ios/chrome/app/intents/BUILD.gn
++@@ -10,6 +10,6 @@ intent_definition("intents") {
++     "OpenInChromeIntent",
++     "OpenInChromeIncognitoIntent",
++     "SearchInChromeIntent",
++-    "OpenGoogleIntent"
+++    "AddToReadingListIntent"
++   ]
++ }
++diff --git a/ios/chrome/app/intents/Intents.intentdefinition b/ios/chrome/app/intents/Intents.intentdefinition
++index fb4bbfc9e1af..193cf7c4bca3 100644
++--- a/ios/chrome/app/intents/Intents.intentdefinition
+++++ b/ios/chrome/app/intents/Intents.intentdefinition
++@@ -9,7 +9,7 @@
++ 	<key>INIntentDefinitionNamespace</key>
++ 	<string>Oi5136</string>
++ 	<key>INIntentDefinitionSystemVersion</key>
++-	<string>19H15</string>
+++	<string>19H524</string>
++ 	<key>INIntentDefinitionToolsBuildVersion</key>
++ 	<string>12D4e</string>
++ 	<key>INIntentDefinitionToolsVersion</key>
++@@ -309,9 +309,11 @@
++ 		</dict>
++ 		<dict>
++ 			<key>INIntentCategory</key>
++-			<string>information</string>
+++			<string>generic</string>
++ 			<key>INIntentConfigurable</key>
++ 			<true/>
+++			<key>INIntentDescription</key>
+++			<string>Adds provided URLs to the Chrome reading list</string>
++ 			<key>INIntentDescriptionID</key>
++ 			<string>lWF6Wa</string>
++ 			<key>INIntentEligibleForWidgets</key>
++@@ -319,15 +321,15 @@
++ 			<key>INIntentIneligibleForSuggestions</key>
++ 			<true/>
++ 			<key>INIntentLastParameterTag</key>
++-			<integer>5</integer>
+++			<integer>10</integer>
++ 			<key>INIntentManagedParameterCombinations</key>
++ 			<dict>
++-				<key></key>
+++				<key>url</key>
++ 				<dict>
++ 					<key>INIntentParameterCombinationSupportsBackgroundExecution</key>
++ 					<true/>
++ 					<key>INIntentParameterCombinationTitle</key>
++-					<string>Open google </string>
+++					<string>Add  ${url} to reading list</string>
++ 					<key>INIntentParameterCombinationTitleID</key>
++ 					<string>9sSkkM</string>
++ 					<key>INIntentParameterCombinationUpdatesLinked</key>
++@@ -335,7 +337,49 @@
++ 				</dict>
++ 			</dict>
++ 			<key>INIntentName</key>
++-			<string>OpenGoogle</string>
+++			<string>AddToReadingList</string>
+++			<key>INIntentParameters</key>
+++			<array>
+++				<dict>
+++					<key>INIntentParameterConfigurable</key>
+++					<true/>
+++					<key>INIntentParameterDisplayName</key>
+++					<string>URL</string>
+++					<key>INIntentParameterDisplayNameID</key>
+++					<string>RIz7nY</string>
+++					<key>INIntentParameterDisplayPriority</key>
+++					<integer>1</integer>
+++					<key>INIntentParameterName</key>
+++					<string>url</string>
+++					<key>INIntentParameterPromptDialogs</key>
+++					<array>
+++						<dict>
+++							<key>INIntentParameterPromptDialogCustom</key>
+++							<true/>
+++							<key>INIntentParameterPromptDialogType</key>
+++							<string>Configuration</string>
+++						</dict>
+++						<dict>
+++							<key>INIntentParameterPromptDialogCustom</key>
+++							<true/>
+++							<key>INIntentParameterPromptDialogFormatString</key>
+++							<string>What URL?</string>
+++							<key>INIntentParameterPromptDialogFormatStringID</key>
+++							<string>T5at1L</string>
+++							<key>INIntentParameterPromptDialogType</key>
+++							<string>Primary</string>
+++						</dict>
+++					</array>
+++					<key>INIntentParameterSupportsMultipleValues</key>
+++					<true/>
+++					<key>INIntentParameterSupportsResolution</key>
+++					<true/>
+++					<key>INIntentParameterTag</key>
+++					<integer>10</integer>
+++					<key>INIntentParameterType</key>
+++					<string>URL</string>
+++				</dict>
+++			</array>
++ 			<key>INIntentResponse</key>
++ 			<dict>
++ 				<key>INIntentResponseCodes</key>
++@@ -353,13 +397,13 @@
++ 				</array>
++ 			</dict>
++ 			<key>INIntentTitle</key>
++-			<string>Open Google</string>
+++			<string>Add To Reading List</string>
++ 			<key>INIntentTitleID</key>
++ 			<string>KdpS5x</string>
++ 			<key>INIntentType</key>
++ 			<string>Custom</string>
++ 			<key>INIntentVerb</key>
++-			<string>Open</string>
+++			<string>Do</string>
++ 		</dict>
++ 	</array>
++ 	<key>INTypes</key>
++diff --git a/ios/chrome/browser/ui/main/scene_controller.mm b/ios/chrome/browser/ui/main/scene_controller.mm
++index 178cd996b269..d6d9291fb3e2 100644
++--- a/ios/chrome/browser/ui/main/scene_controller.mm
+++++ b/ios/chrome/browser/ui/main/scene_controller.mm
++@@ -1912,6 +1912,17 @@ - (ProceduralBlock)completionBlockForTriggeringAction:
++             QRScannerCommands);
++         [QRHandler showQRScanner];
++       };
+++    case OPEN_READING_LIST:
+++          return ^{
+++              if (!self.currentInterface.browser) {
+++                  return;
+++              }
+++              id<BrowserCommands> handler =
+++              HandlerForProtocol(
+++                self.currentInterface.browser->GetCommandDispatcher(),
+++                    BrowserCommands);
+++              [handler showReadingList];
+++          };
++     case FOCUS_OMNIBOX:
++       return ^{
++         if (!self.currentInterface.browser) {
++
++commit d4d290aadbc2f6765c5d947a40deeb8dd32276a8
++Author: Yaroslav Popov <super.ot96@yandex.ru>
++Date:   Thu Apr 1 19:35:16 2021 +0700
++
++    Add to reading list doesn't work
++
++diff --git a/components/reading_list/core/reading_list_model_impl.cc b/components/reading_list/core/reading_list_model_impl.cc
++index 2c6f9e5dde98..20f3153958a3 100644
++--- a/components/reading_list/core/reading_list_model_impl.cc
+++++ b/components/reading_list/core/reading_list_model_impl.cc
++@@ -333,9 +333,9 @@ const ReadingListEntry& ReadingListModelImpl::AddEntry(
++     const GURL& url,
++     const std::string& title,
++     reading_list::EntrySource source) {
++-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++-  DCHECK(loaded());
++-  DCHECK(IsUrlSupported(url));
+++  //DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+++  //DCHECK(loaded());
+++  //DCHECK(IsUrlSupported(url));
++   std::unique_ptr<ReadingListModel::ScopedReadingListBatchUpdate>
++       scoped_model_batch_updates = nullptr;
++   if (GetEntryByURL(url)) {
++diff --git a/ios/chrome/app/application_delegate/user_activity_handler.mm b/ios/chrome/app/application_delegate/user_activity_handler.mm
++index 5f53ba5fa17c..e957b8941528 100644
++--- a/ios/chrome/app/application_delegate/user_activity_handler.mm
+++++ b/ios/chrome/app/application_delegate/user_activity_handler.mm
++@@ -15,6 +15,8 @@
++ #include "base/strings/sys_string_conversions.h"
++ #include "components/handoff/handoff_utility.h"
++ #include "components/search_engines/template_url_service.h"
+++#include "components/reading_list/core/reading_list_model.h"
+++
++ #import "ios/chrome/app/app_startup_parameters.h"
++ #import "ios/chrome/app/application_delegate/startup_information.h"
++ #import "ios/chrome/app/application_delegate/tab_opening.h"
++@@ -33,6 +35,8 @@
++ #import "ios/chrome/browser/main/browser_list_factory.h"
++ #include "ios/chrome/browser/metrics/first_user_action_recorder.h"
++ #import "ios/chrome/browser/policy/policy_util.h"
+++#import "ios/chrome/browser/reading_list/offline_page_tab_helper.h"
+++#include "ios/chrome/browser/reading_list/reading_list_model_factory.h"
++ #include "ios/chrome/browser/search_engines/template_url_service_factory.h"
++ #import "ios/chrome/browser/u2f/u2f_tab_helper.h"
++ #import "ios/chrome/browser/ui/main/browser_interface_provider.h"
++@@ -178,25 +182,33 @@ + (BOOL)continueUserActivity:(NSUserActivity*)userActivity
++     }
++   } else if ([userActivity.activityType
++               isEqualToString:kSiriShortcutOpenGoogle]) {
++-    base::RecordAction(UserMetricsAction("IOSLaunchedByOpenGoogleIntent"));
+++    //base::RecordAction(UserMetricsAction("IOSLaunchedByOpenGoogleIntent"));
++     
++   
++     NSURL* googleSearchPageNSURL = [NSURL URLWithString:@"https://google.com"];
++   
++     std::vector<GURL> URLs;
++-    URLs.push_back(net::GURLWithNSURL(googleSearchPageNSURL));
+++    //URLs.push_back(net::GURLWithNSURL(googleSearchPageNSURL));
++   
++     AppStartupParameters* startupParams =
++           [[AppStartupParameters alloc] initWithURLs:URLs];
++ 
++    [connectionInformation setStartupParameters:startupParams];
++-   return [self continueUserActivityURLs:URLs
+++      
+++      ReadingListModel* readingModel =
+++          ReadingListModelFactory::GetForBrowserState(browserState);
+++      NSString* title = @"google";
+++      readingModel->AddEntry(net::GURLWithNSURL(googleSearchPageNSURL), base::SysNSStringToUTF8(title),
+++                             reading_list::ADDED_VIA_CURRENT_APP);
+++      
+++      
+++      /*return [self continueUserActivityURLs:URLs
++                      applicationIsActive:applicationIsActive
++                                tabOpener:tabOpener
++                    connectionInformation:connectionInformation
++                       startupInformation:startupInformation
++-                               Incognito:NO];
++-  
+++       Incognito:NO];*/return YES;
+++      
++   } else if ([userActivity.activityType
++                  isEqualToString:kSiriShortcutSearchInChrome]) {
++     base::RecordAction(UserMetricsAction("IOSLaunchedBySearchInChromeIntent"));
++diff --git a/ios/chrome/app/resources/Info.plist b/ios/chrome/app/resources/Info.plist
++index 5edbd8fcd174..65e2a894319a 100644
++--- a/ios/chrome/app/resources/Info.plist
+++++ b/ios/chrome/app/resources/Info.plist
++@@ -96,6 +96,7 @@
++ 		<string>OpenInChromeIntent</string>
++ 		<string>OpenInChromeIncognitoIntent</string>
++ 		<string>SearchInChromeIntent</string>
+++		<string>OpenGoogleIntent</string>
++ 	</array>
++ 	<key>UIBackgroundModes</key>
++ 	<array>
++
++commit 4ca1bc591cc80af1095fd90cc9f99c11c2dd9570
++Author: Yaroslav Popov <super.ot96@yandex.ru>
++Date:   Wed Mar 24 00:18:29 2021 +0700
++
++    OpenGoogle shortcut added
++
++diff --git a/ios/build/tools/setup-gn.config b/ios/build/tools/setup-gn.config
++index acb1884a0e5c..efe4cbd31e3e 100644
++--- a/ios/build/tools/setup-gn.config
+++++ b/ios/build/tools/setup-gn.config
++@@ -37,3 +37,4 @@ filter_a = "//ui/base:ui_base_unittests"
++ filter_b = "//ui/gfx:gfx_unittests"
++ filter_c = "//url:url_unittests"
++ filter_d = "//third_party/crashpad/*"
+++
++diff --git a/ios/chrome/app/application_delegate/user_activity_handler.mm b/ios/chrome/app/application_delegate/user_activity_handler.mm
++index bf374b4a946a..5f53ba5fa17c 100644
++--- a/ios/chrome/app/application_delegate/user_activity_handler.mm
+++++ b/ios/chrome/app/application_delegate/user_activity_handler.mm
++@@ -22,6 +22,7 @@
++ #import "ios/chrome/app/intents/OpenInChromeIncognitoIntent.h"
++ #import "ios/chrome/app/intents/OpenInChromeIntent.h"
++ #import "ios/chrome/app/intents/SearchInChromeIntent.h"
+++#import "ios/chrome/app/intents/OpenGoogleIntent.h"
++ #import "ios/chrome/app/spotlight/actions_spotlight_manager.h"
++ #import "ios/chrome/app/spotlight/spotlight_util.h"
++ #include "ios/chrome/app/startup/chrome_app_startup_parameters.h"
++@@ -61,6 +62,7 @@
++ NSString* const kSiriShortcutOpenInChrome = @"OpenInChromeIntent";
++ NSString* const kSiriShortcutSearchInChrome = @"SearchInChromeIntent";
++ NSString* const kSiriShortcutOpenInIncognito = @"OpenInChromeIncognitoIntent";
+++NSString* const kSiriShortcutOpenGoogle = @"OpenGoogleIntent";
++ 
++ // Constants for compatible mode for user activities.
++ NSString* const kRegularMode = @"RegularMode";
++@@ -76,16 +78,17 @@
++ 
++ // Returns the compatible mode array for an user activity.
++ NSArray* CompatibleModeForActivityType(NSString* activityType) {
++-  if (activityType == CSSearchableItemActionType ||
++-      activityType == kShortcutNewSearch ||
++-      activityType == kShortcutVoiceSearch ||
++-      activityType == kShortcutQRScanner ||
++-      activityType == kSiriShortcutSearchInChrome) {
+++  if ([activityType isEqualToString: kSiriShortcutOpenGoogle] ||
+++      [activityType isEqualToString: CSSearchableItemActionType] ||
+++      [activityType isEqualToString: kShortcutNewSearch] ||
+++      [activityType isEqualToString: kShortcutVoiceSearch] ||
+++      [activityType isEqualToString: kSiriShortcutSearchInChrome] ||
+++      [activityType isEqualToString: kShortcutQRScanner]) {
++     return @[ kRegularMode, kIncognitoMode ];
++-  } else if (activityType == kSiriShortcutOpenInChrome) {
+++  } else if ([activityType isEqualToString: kSiriShortcutOpenInChrome]) {
++     return @[ kRegularMode ];
++-  } else if (activityType == kShortcutNewIncognitoSearch ||
++-             activityType == kSiriShortcutOpenInIncognito) {
+++  } else if ([activityType isEqualToString: kShortcutNewIncognitoSearch] ||
+++             [activityType isEqualToString: kSiriShortcutOpenInIncognito]) {
++     return @[ kIncognitoMode ];
++   } else {
++     NOTREACHED();
++@@ -173,6 +176,27 @@ + (BOOL)continueUserActivity:(NSUserActivity*)userActivity
++       });
++       return YES;
++     }
+++  } else if ([userActivity.activityType
+++              isEqualToString:kSiriShortcutOpenGoogle]) {
+++    base::RecordAction(UserMetricsAction("IOSLaunchedByOpenGoogleIntent"));
+++    
+++  
+++    NSURL* googleSearchPageNSURL = [NSURL URLWithString:@"https://google.com"];
+++  
+++    std::vector<GURL> URLs;
+++    URLs.push_back(net::GURLWithNSURL(googleSearchPageNSURL));
+++  
+++    AppStartupParameters* startupParams =
+++          [[AppStartupParameters alloc] initWithURLs:URLs];
+++
+++   [connectionInformation setStartupParameters:startupParams];
+++   return [self continueUserActivityURLs:URLs
+++                     applicationIsActive:applicationIsActive
+++                               tabOpener:tabOpener
+++                   connectionInformation:connectionInformation
+++                      startupInformation:startupInformation
+++                               Incognito:NO];
+++  
++   } else if ([userActivity.activityType
++                  isEqualToString:kSiriShortcutSearchInChrome]) {
++     base::RecordAction(UserMetricsAction("IOSLaunchedBySearchInChromeIntent"));
++diff --git a/ios/chrome/app/intents/BUILD.gn b/ios/chrome/app/intents/BUILD.gn
++index 7f25c2133ca2..83914c9084c5 100644
++--- a/ios/chrome/app/intents/BUILD.gn
+++++ b/ios/chrome/app/intents/BUILD.gn
++@@ -10,5 +10,6 @@ intent_definition("intents") {
++     "OpenInChromeIntent",
++     "OpenInChromeIncognitoIntent",
++     "SearchInChromeIntent",
+++    "OpenGoogleIntent"
++   ]
++ }
++diff --git a/ios/chrome/app/intents/Intents.intentdefinition b/ios/chrome/app/intents/Intents.intentdefinition
++index b0641e7a686c..fb4bbfc9e1af 100644
++--- a/ios/chrome/app/intents/Intents.intentdefinition
+++++ b/ios/chrome/app/intents/Intents.intentdefinition
++@@ -5,15 +5,15 @@
++ 	<key>INEnums</key>
++ 	<array/>
++ 	<key>INIntentDefinitionModelVersion</key>
++-	<string>1.1</string>
+++	<string>1.2</string>
++ 	<key>INIntentDefinitionNamespace</key>
++ 	<string>Oi5136</string>
++ 	<key>INIntentDefinitionSystemVersion</key>
++-	<string>19H2</string>
+++	<string>19H15</string>
++ 	<key>INIntentDefinitionToolsBuildVersion</key>
++-	<string>11E708</string>
+++	<string>12D4e</string>
++ 	<key>INIntentDefinitionToolsVersion</key>
++-	<string>11.6</string>
+++	<string>12.4</string>
++ 	<key>INIntents</key>
++ 	<array>
++ 		<dict>
++@@ -307,6 +307,60 @@
++ 			<key>INIntentVerb</key>
++ 			<string>Open</string>
++ 		</dict>
+++		<dict>
+++			<key>INIntentCategory</key>
+++			<string>information</string>
+++			<key>INIntentConfigurable</key>
+++			<true/>
+++			<key>INIntentDescriptionID</key>
+++			<string>lWF6Wa</string>
+++			<key>INIntentEligibleForWidgets</key>
+++			<true/>
+++			<key>INIntentIneligibleForSuggestions</key>
+++			<true/>
+++			<key>INIntentLastParameterTag</key>
+++			<integer>5</integer>
+++			<key>INIntentManagedParameterCombinations</key>
+++			<dict>
+++				<key></key>
+++				<dict>
+++					<key>INIntentParameterCombinationSupportsBackgroundExecution</key>
+++					<true/>
+++					<key>INIntentParameterCombinationTitle</key>
+++					<string>Open google </string>
+++					<key>INIntentParameterCombinationTitleID</key>
+++					<string>9sSkkM</string>
+++					<key>INIntentParameterCombinationUpdatesLinked</key>
+++					<true/>
+++				</dict>
+++			</dict>
+++			<key>INIntentName</key>
+++			<string>OpenGoogle</string>
+++			<key>INIntentResponse</key>
+++			<dict>
+++				<key>INIntentResponseCodes</key>
+++				<array>
+++					<dict>
+++						<key>INIntentResponseCodeName</key>
+++						<string>success</string>
+++						<key>INIntentResponseCodeSuccess</key>
+++						<true/>
+++					</dict>
+++					<dict>
+++						<key>INIntentResponseCodeName</key>
+++						<string>failure</string>
+++					</dict>
+++				</array>
+++			</dict>
+++			<key>INIntentTitle</key>
+++			<string>Open Google</string>
+++			<key>INIntentTitleID</key>
+++			<string>KdpS5x</string>
+++			<key>INIntentType</key>
+++			<string>Custom</string>
+++			<key>INIntentVerb</key>
+++			<string>Open</string>
+++		</dict>
++ 	</array>
++ 	<key>INTypes</key>
++ 	<array/>
+
+commit 6d996111036c9e282da56294b0ed36c22898162e
+Author: Yaroslav Popov <super.ot96@yandex.ru>
+Date:   Wed Apr 21 23:58:49 2021 +0700
+
+    "add to reading list" intent added
+
+diff --git a/components/reading_list/core/reading_list_model_impl.cc b/components/reading_list/core/reading_list_model_impl.cc
+index 20f3153958a39..2c6f9e5dde984 100644
+--- a/components/reading_list/core/reading_list_model_impl.cc
++++ b/components/reading_list/core/reading_list_model_impl.cc
+@@ -333,9 +333,9 @@ const ReadingListEntry& ReadingListModelImpl::AddEntry(
+     const GURL& url,
+     const std::string& title,
+     reading_list::EntrySource source) {
+-  //DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+-  //DCHECK(loaded());
+-  //DCHECK(IsUrlSupported(url));
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  DCHECK(loaded());
++  DCHECK(IsUrlSupported(url));
+   std::unique_ptr<ReadingListModel::ScopedReadingListBatchUpdate>
+       scoped_model_batch_updates = nullptr;
+   if (GetEntryByURL(url)) {
+diff --git a/ios/chrome/app/app_startup_parameters.h b/ios/chrome/app/app_startup_parameters.h
+index c210376088b56..c29a76ab40278 100644
+--- a/ios/chrome/app/app_startup_parameters.h
++++ b/ios/chrome/app/app_startup_parameters.h
+@@ -16,6 +16,7 @@ enum NTPTabOpeningPostOpeningAction {
+   NO_ACTION = 0,
+   START_VOICE_SEARCH,
+   START_QR_CODE_SCANNER,
++  OPEN_READING_LIST,
+   FOCUS_OMNIBOX,
+   NTP_TAB_OPENING_POST_OPENING_ACTION_COUNT,
+ };
+diff --git a/ios/chrome/app/application_delegate/user_activity_handler.mm b/ios/chrome/app/application_delegate/user_activity_handler.mm
+index e957b8941528d..a8649e5f45ceb 100644
+--- a/ios/chrome/app/application_delegate/user_activity_handler.mm
++++ b/ios/chrome/app/application_delegate/user_activity_handler.mm
+@@ -24,7 +24,7 @@
+ #import "ios/chrome/app/intents/OpenInChromeIncognitoIntent.h"
+ #import "ios/chrome/app/intents/OpenInChromeIntent.h"
+ #import "ios/chrome/app/intents/SearchInChromeIntent.h"
+-#import "ios/chrome/app/intents/OpenGoogleIntent.h"
++#import "ios/chrome/app/intents/AddToReadingListIntent.h"
+ #import "ios/chrome/app/spotlight/actions_spotlight_manager.h"
+ #import "ios/chrome/app/spotlight/spotlight_util.h"
+ #include "ios/chrome/app/startup/chrome_app_startup_parameters.h"
+@@ -35,7 +35,7 @@
+ #import "ios/chrome/browser/main/browser_list_factory.h"
+ #include "ios/chrome/browser/metrics/first_user_action_recorder.h"
+ #import "ios/chrome/browser/policy/policy_util.h"
+-#import "ios/chrome/browser/reading_list/offline_page_tab_helper.h"
++//#import "ios/chrome/browser/reading_list/offline_page_tab_helper.h"
+ #include "ios/chrome/browser/reading_list/reading_list_model_factory.h"
+ #include "ios/chrome/browser/search_engines/template_url_service_factory.h"
+ #import "ios/chrome/browser/u2f/u2f_tab_helper.h"
+@@ -66,7 +66,7 @@
+ NSString* const kSiriShortcutOpenInChrome = @"OpenInChromeIntent";
+ NSString* const kSiriShortcutSearchInChrome = @"SearchInChromeIntent";
+ NSString* const kSiriShortcutOpenInIncognito = @"OpenInChromeIncognitoIntent";
+-NSString* const kSiriShortcutOpenGoogle = @"OpenGoogleIntent";
++NSString* const kSiriShortcutAddToReadingList = @"AddToReadingListIntent";
+ 
+ // Constants for compatible mode for user activities.
+ NSString* const kRegularMode = @"RegularMode";
+@@ -82,7 +82,7 @@
+ 
+ // Returns the compatible mode array for an user activity.
+ NSArray* CompatibleModeForActivityType(NSString* activityType) {
+-  if ([activityType isEqualToString: kSiriShortcutOpenGoogle] ||
++  if ([activityType isEqualToString: kSiriShortcutAddToReadingList] ||
+       [activityType isEqualToString: CSSearchableItemActionType] ||
+       [activityType isEqualToString: kShortcutNewSearch] ||
+       [activityType isEqualToString: kShortcutVoiceSearch] ||
+@@ -181,34 +181,48 @@ + (BOOL)continueUserActivity:(NSUserActivity*)userActivity
+       return YES;
+     }
+   } else if ([userActivity.activityType
+-              isEqualToString:kSiriShortcutOpenGoogle]) {
+-    //base::RecordAction(UserMetricsAction("IOSLaunchedByOpenGoogleIntent"));
+-    
+-  
+-    NSURL* googleSearchPageNSURL = [NSURL URLWithString:@"https://google.com"];
+-  
+-    std::vector<GURL> URLs;
+-    //URLs.push_back(net::GURLWithNSURL(googleSearchPageNSURL));
++              isEqualToString:kSiriShortcutAddToReadingList]) {
++    base::RecordAction(UserMetricsAction("IOSLaunchedByAddToReadingListIntent"));
++      
++    AddToReadingListIntent* intent =
++                base::mac::ObjCCastStrict<AddToReadingListIntent>(
++                userActivity.interaction.intent);
++      
++    if (!intent) {
++        return NO;
++    }
++      
++    if (!intent.url || intent.url.count == 0) {
++        return NO;
++    }
+   
+-    AppStartupParameters* startupParams =
+-          [[AppStartupParameters alloc] initWithURLs:URLs];
++      std::vector<GURL> URLs = createGURLVectorFromIntentURLs(intent.url);
+ 
+-   [connectionInformation setStartupParameters:startupParams];
+-      
+       ReadingListModel* readingModel =
+           ReadingListModelFactory::GetForBrowserState(browserState);
+-      NSString* title = @"google";
+-      readingModel->AddEntry(net::GURLWithNSURL(googleSearchPageNSURL), base::SysNSStringToUTF8(title),
+-                             reading_list::ADDED_VIA_CURRENT_APP);
+       
++      if (readingModel && readingModel->loaded())
++          for (auto& URL : URLs){
++          NSString* title = @"New item";
++          readingModel->AddEntry(URL, base::SysNSStringToUTF8(title),
++                                 reading_list::ADDED_VIA_CURRENT_APP);
++          } else {
++              sleep(1000);
++      }
++    AppStartupParameters* startupParams =
++          [[AppStartupParameters alloc] initWithExternalURL:GURL(kChromeUINewTabURL) completeURL:GURL(kChromeUINewTabURL)];
++      
++      //startupParams.postOpeningAction = OPEN_READING_LIST;
++
++   [connectionInformation setStartupParameters:startupParams];
+       
+-      /*return [self continueUserActivityURLs:URLs
++      return [self continueUserActivityURLs:URLs
+                      applicationIsActive:applicationIsActive
+                                tabOpener:tabOpener
+                    connectionInformation:connectionInformation
+                       startupInformation:startupInformation
+-       Incognito:NO];*/return YES;
+-      
++       Incognito:NO];
++     
+   } else if ([userActivity.activityType
+                  isEqualToString:kSiriShortcutSearchInChrome]) {
+     base::RecordAction(UserMetricsAction("IOSLaunchedBySearchInChromeIntent"));
+diff --git a/ios/chrome/app/intents/BUILD.gn b/ios/chrome/app/intents/BUILD.gn
+index 83914c9084c53..14b0e4537ec09 100644
+--- a/ios/chrome/app/intents/BUILD.gn
++++ b/ios/chrome/app/intents/BUILD.gn
+@@ -10,6 +10,6 @@ intent_definition("intents") {
+     "OpenInChromeIntent",
+     "OpenInChromeIncognitoIntent",
+     "SearchInChromeIntent",
+-    "OpenGoogleIntent"
++    "AddToReadingListIntent"
+   ]
+ }
+diff --git a/ios/chrome/app/intents/Intents.intentdefinition b/ios/chrome/app/intents/Intents.intentdefinition
+index fb4bbfc9e1afb..193cf7c4bca3a 100644
+--- a/ios/chrome/app/intents/Intents.intentdefinition
++++ b/ios/chrome/app/intents/Intents.intentdefinition
+@@ -9,7 +9,7 @@
+ 	<key>INIntentDefinitionNamespace</key>
+ 	<string>Oi5136</string>
+ 	<key>INIntentDefinitionSystemVersion</key>
+-	<string>19H15</string>
++	<string>19H524</string>
+ 	<key>INIntentDefinitionToolsBuildVersion</key>
+ 	<string>12D4e</string>
+ 	<key>INIntentDefinitionToolsVersion</key>
+@@ -309,9 +309,11 @@
+ 		</dict>
+ 		<dict>
+ 			<key>INIntentCategory</key>
+-			<string>information</string>
++			<string>generic</string>
+ 			<key>INIntentConfigurable</key>
+ 			<true/>
++			<key>INIntentDescription</key>
++			<string>Adds provided URLs to the Chrome reading list</string>
+ 			<key>INIntentDescriptionID</key>
+ 			<string>lWF6Wa</string>
+ 			<key>INIntentEligibleForWidgets</key>
+@@ -319,15 +321,15 @@
+ 			<key>INIntentIneligibleForSuggestions</key>
+ 			<true/>
+ 			<key>INIntentLastParameterTag</key>
+-			<integer>5</integer>
++			<integer>10</integer>
+ 			<key>INIntentManagedParameterCombinations</key>
+ 			<dict>
+-				<key></key>
++				<key>url</key>
+ 				<dict>
+ 					<key>INIntentParameterCombinationSupportsBackgroundExecution</key>
+ 					<true/>
+ 					<key>INIntentParameterCombinationTitle</key>
+-					<string>Open google </string>
++					<string>Add  ${url} to reading list</string>
+ 					<key>INIntentParameterCombinationTitleID</key>
+ 					<string>9sSkkM</string>
+ 					<key>INIntentParameterCombinationUpdatesLinked</key>
+@@ -335,7 +337,49 @@
+ 				</dict>
+ 			</dict>
+ 			<key>INIntentName</key>
+-			<string>OpenGoogle</string>
++			<string>AddToReadingList</string>
++			<key>INIntentParameters</key>
++			<array>
++				<dict>
++					<key>INIntentParameterConfigurable</key>
++					<true/>
++					<key>INIntentParameterDisplayName</key>
++					<string>URL</string>
++					<key>INIntentParameterDisplayNameID</key>
++					<string>RIz7nY</string>
++					<key>INIntentParameterDisplayPriority</key>
++					<integer>1</integer>
++					<key>INIntentParameterName</key>
++					<string>url</string>
++					<key>INIntentParameterPromptDialogs</key>
++					<array>
++						<dict>
++							<key>INIntentParameterPromptDialogCustom</key>
++							<true/>
++							<key>INIntentParameterPromptDialogType</key>
++							<string>Configuration</string>
++						</dict>
++						<dict>
++							<key>INIntentParameterPromptDialogCustom</key>
++							<true/>
++							<key>INIntentParameterPromptDialogFormatString</key>
++							<string>What URL?</string>
++							<key>INIntentParameterPromptDialogFormatStringID</key>
++							<string>T5at1L</string>
++							<key>INIntentParameterPromptDialogType</key>
++							<string>Primary</string>
++						</dict>
++					</array>
++					<key>INIntentParameterSupportsMultipleValues</key>
++					<true/>
++					<key>INIntentParameterSupportsResolution</key>
++					<true/>
++					<key>INIntentParameterTag</key>
++					<integer>10</integer>
++					<key>INIntentParameterType</key>
++					<string>URL</string>
++				</dict>
++			</array>
+ 			<key>INIntentResponse</key>
+ 			<dict>
+ 				<key>INIntentResponseCodes</key>
+@@ -353,13 +397,13 @@
+ 				</array>
+ 			</dict>
+ 			<key>INIntentTitle</key>
+-			<string>Open Google</string>
++			<string>Add To Reading List</string>
+ 			<key>INIntentTitleID</key>
+ 			<string>KdpS5x</string>
+ 			<key>INIntentType</key>
+ 			<string>Custom</string>
+ 			<key>INIntentVerb</key>
+-			<string>Open</string>
++			<string>Do</string>
+ 		</dict>
+ 	</array>
+ 	<key>INTypes</key>
+diff --git a/ios/chrome/browser/ui/main/scene_controller.mm b/ios/chrome/browser/ui/main/scene_controller.mm
+index 178cd996b2695..d6d9291fb3e2c 100644
+--- a/ios/chrome/browser/ui/main/scene_controller.mm
++++ b/ios/chrome/browser/ui/main/scene_controller.mm
+@@ -1912,6 +1912,17 @@ - (ProceduralBlock)completionBlockForTriggeringAction:
+             QRScannerCommands);
+         [QRHandler showQRScanner];
+       };
++    case OPEN_READING_LIST:
++          return ^{
++              if (!self.currentInterface.browser) {
++                  return;
++              }
++              id<BrowserCommands> handler =
++              HandlerForProtocol(
++                self.currentInterface.browser->GetCommandDispatcher(),
++                    BrowserCommands);
++              [handler showReadingList];
++          };
+     case FOCUS_OMNIBOX:
+       return ^{
+         if (!self.currentInterface.browser) {
+
+commit d4d290aadbc2f6765c5d947a40deeb8dd32276a8
+Author: Yaroslav Popov <super.ot96@yandex.ru>
+Date:   Thu Apr 1 19:35:16 2021 +0700
+
+    Add to reading list doesn't work
+
+diff --git a/components/reading_list/core/reading_list_model_impl.cc b/components/reading_list/core/reading_list_model_impl.cc
+index 2c6f9e5dde984..20f3153958a39 100644
+--- a/components/reading_list/core/reading_list_model_impl.cc
++++ b/components/reading_list/core/reading_list_model_impl.cc
+@@ -333,9 +333,9 @@ const ReadingListEntry& ReadingListModelImpl::AddEntry(
+     const GURL& url,
+     const std::string& title,
+     reading_list::EntrySource source) {
+-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+-  DCHECK(loaded());
+-  DCHECK(IsUrlSupported(url));
++  //DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  //DCHECK(loaded());
++  //DCHECK(IsUrlSupported(url));
+   std::unique_ptr<ReadingListModel::ScopedReadingListBatchUpdate>
+       scoped_model_batch_updates = nullptr;
+   if (GetEntryByURL(url)) {
+diff --git a/ios/chrome/app/application_delegate/user_activity_handler.mm b/ios/chrome/app/application_delegate/user_activity_handler.mm
+index 5f53ba5fa17ce..e957b8941528d 100644
+--- a/ios/chrome/app/application_delegate/user_activity_handler.mm
++++ b/ios/chrome/app/application_delegate/user_activity_handler.mm
+@@ -15,6 +15,8 @@
+ #include "base/strings/sys_string_conversions.h"
+ #include "components/handoff/handoff_utility.h"
+ #include "components/search_engines/template_url_service.h"
++#include "components/reading_list/core/reading_list_model.h"
++
+ #import "ios/chrome/app/app_startup_parameters.h"
+ #import "ios/chrome/app/application_delegate/startup_information.h"
+ #import "ios/chrome/app/application_delegate/tab_opening.h"
+@@ -33,6 +35,8 @@
+ #import "ios/chrome/browser/main/browser_list_factory.h"
+ #include "ios/chrome/browser/metrics/first_user_action_recorder.h"
+ #import "ios/chrome/browser/policy/policy_util.h"
++#import "ios/chrome/browser/reading_list/offline_page_tab_helper.h"
++#include "ios/chrome/browser/reading_list/reading_list_model_factory.h"
+ #include "ios/chrome/browser/search_engines/template_url_service_factory.h"
+ #import "ios/chrome/browser/u2f/u2f_tab_helper.h"
+ #import "ios/chrome/browser/ui/main/browser_interface_provider.h"
+@@ -178,25 +182,33 @@ + (BOOL)continueUserActivity:(NSUserActivity*)userActivity
+     }
+   } else if ([userActivity.activityType
+               isEqualToString:kSiriShortcutOpenGoogle]) {
+-    base::RecordAction(UserMetricsAction("IOSLaunchedByOpenGoogleIntent"));
++    //base::RecordAction(UserMetricsAction("IOSLaunchedByOpenGoogleIntent"));
+     
+   
+     NSURL* googleSearchPageNSURL = [NSURL URLWithString:@"https://google.com"];
+   
+     std::vector<GURL> URLs;
+-    URLs.push_back(net::GURLWithNSURL(googleSearchPageNSURL));
++    //URLs.push_back(net::GURLWithNSURL(googleSearchPageNSURL));
+   
+     AppStartupParameters* startupParams =
+           [[AppStartupParameters alloc] initWithURLs:URLs];
+ 
+    [connectionInformation setStartupParameters:startupParams];
+-   return [self continueUserActivityURLs:URLs
++      
++      ReadingListModel* readingModel =
++          ReadingListModelFactory::GetForBrowserState(browserState);
++      NSString* title = @"google";
++      readingModel->AddEntry(net::GURLWithNSURL(googleSearchPageNSURL), base::SysNSStringToUTF8(title),
++                             reading_list::ADDED_VIA_CURRENT_APP);
++      
++      
++      /*return [self continueUserActivityURLs:URLs
+                      applicationIsActive:applicationIsActive
+                                tabOpener:tabOpener
+                    connectionInformation:connectionInformation
+                       startupInformation:startupInformation
+-                               Incognito:NO];
+-  
++       Incognito:NO];*/return YES;
++      
+   } else if ([userActivity.activityType
+                  isEqualToString:kSiriShortcutSearchInChrome]) {
+     base::RecordAction(UserMetricsAction("IOSLaunchedBySearchInChromeIntent"));
+diff --git a/ios/chrome/app/resources/Info.plist b/ios/chrome/app/resources/Info.plist
+index 5edbd8fcd174e..65e2a894319aa 100644
+--- a/ios/chrome/app/resources/Info.plist
++++ b/ios/chrome/app/resources/Info.plist
+@@ -96,6 +96,7 @@
+ 		<string>OpenInChromeIntent</string>
+ 		<string>OpenInChromeIncognitoIntent</string>
+ 		<string>SearchInChromeIntent</string>
++		<string>OpenGoogleIntent</string>
+ 	</array>
+ 	<key>UIBackgroundModes</key>
+ 	<array>
+
+commit 4ca1bc591cc80af1095fd90cc9f99c11c2dd9570
+Author: Yaroslav Popov <super.ot96@yandex.ru>
+Date:   Wed Mar 24 00:18:29 2021 +0700
+
+    OpenGoogle shortcut added
+
+diff --git a/ios/build/tools/setup-gn.config b/ios/build/tools/setup-gn.config
+index acb1884a0e5c5..efe4cbd31e3e5 100644
+--- a/ios/build/tools/setup-gn.config
++++ b/ios/build/tools/setup-gn.config
+@@ -37,3 +37,4 @@ filter_a = "//ui/base:ui_base_unittests"
+ filter_b = "//ui/gfx:gfx_unittests"
+ filter_c = "//url:url_unittests"
+ filter_d = "//third_party/crashpad/*"
++
+diff --git a/ios/chrome/app/application_delegate/user_activity_handler.mm b/ios/chrome/app/application_delegate/user_activity_handler.mm
+index bf374b4a946a6..5f53ba5fa17ce 100644
+--- a/ios/chrome/app/application_delegate/user_activity_handler.mm
++++ b/ios/chrome/app/application_delegate/user_activity_handler.mm
+@@ -22,6 +22,7 @@
+ #import "ios/chrome/app/intents/OpenInChromeIncognitoIntent.h"
+ #import "ios/chrome/app/intents/OpenInChromeIntent.h"
+ #import "ios/chrome/app/intents/SearchInChromeIntent.h"
++#import "ios/chrome/app/intents/OpenGoogleIntent.h"
+ #import "ios/chrome/app/spotlight/actions_spotlight_manager.h"
+ #import "ios/chrome/app/spotlight/spotlight_util.h"
+ #include "ios/chrome/app/startup/chrome_app_startup_parameters.h"
+@@ -61,6 +62,7 @@
+ NSString* const kSiriShortcutOpenInChrome = @"OpenInChromeIntent";
+ NSString* const kSiriShortcutSearchInChrome = @"SearchInChromeIntent";
+ NSString* const kSiriShortcutOpenInIncognito = @"OpenInChromeIncognitoIntent";
++NSString* const kSiriShortcutOpenGoogle = @"OpenGoogleIntent";
+ 
+ // Constants for compatible mode for user activities.
+ NSString* const kRegularMode = @"RegularMode";
+@@ -76,16 +78,17 @@
+ 
+ // Returns the compatible mode array for an user activity.
+ NSArray* CompatibleModeForActivityType(NSString* activityType) {
+-  if (activityType == CSSearchableItemActionType ||
+-      activityType == kShortcutNewSearch ||
+-      activityType == kShortcutVoiceSearch ||
+-      activityType == kShortcutQRScanner ||
+-      activityType == kSiriShortcutSearchInChrome) {
++  if ([activityType isEqualToString: kSiriShortcutOpenGoogle] ||
++      [activityType isEqualToString: CSSearchableItemActionType] ||
++      [activityType isEqualToString: kShortcutNewSearch] ||
++      [activityType isEqualToString: kShortcutVoiceSearch] ||
++      [activityType isEqualToString: kSiriShortcutSearchInChrome] ||
++      [activityType isEqualToString: kShortcutQRScanner]) {
+     return @[ kRegularMode, kIncognitoMode ];
+-  } else if (activityType == kSiriShortcutOpenInChrome) {
++  } else if ([activityType isEqualToString: kSiriShortcutOpenInChrome]) {
+     return @[ kRegularMode ];
+-  } else if (activityType == kShortcutNewIncognitoSearch ||
+-             activityType == kSiriShortcutOpenInIncognito) {
++  } else if ([activityType isEqualToString: kShortcutNewIncognitoSearch] ||
++             [activityType isEqualToString: kSiriShortcutOpenInIncognito]) {
+     return @[ kIncognitoMode ];
+   } else {
+     NOTREACHED();
+@@ -173,6 +176,27 @@ + (BOOL)continueUserActivity:(NSUserActivity*)userActivity
+       });
+       return YES;
+     }
++  } else if ([userActivity.activityType
++              isEqualToString:kSiriShortcutOpenGoogle]) {
++    base::RecordAction(UserMetricsAction("IOSLaunchedByOpenGoogleIntent"));
++    
++  
++    NSURL* googleSearchPageNSURL = [NSURL URLWithString:@"https://google.com"];
++  
++    std::vector<GURL> URLs;
++    URLs.push_back(net::GURLWithNSURL(googleSearchPageNSURL));
++  
++    AppStartupParameters* startupParams =
++          [[AppStartupParameters alloc] initWithURLs:URLs];
++
++   [connectionInformation setStartupParameters:startupParams];
++   return [self continueUserActivityURLs:URLs
++                     applicationIsActive:applicationIsActive
++                               tabOpener:tabOpener
++                   connectionInformation:connectionInformation
++                      startupInformation:startupInformation
++                               Incognito:NO];
++  
+   } else if ([userActivity.activityType
+                  isEqualToString:kSiriShortcutSearchInChrome]) {
+     base::RecordAction(UserMetricsAction("IOSLaunchedBySearchInChromeIntent"));
+diff --git a/ios/chrome/app/intents/BUILD.gn b/ios/chrome/app/intents/BUILD.gn
+index 7f25c2133ca22..83914c9084c53 100644
+--- a/ios/chrome/app/intents/BUILD.gn
++++ b/ios/chrome/app/intents/BUILD.gn
+@@ -10,5 +10,6 @@ intent_definition("intents") {
+     "OpenInChromeIntent",
+     "OpenInChromeIncognitoIntent",
+     "SearchInChromeIntent",
++    "OpenGoogleIntent"
+   ]
+ }
+diff --git a/ios/chrome/app/intents/Intents.intentdefinition b/ios/chrome/app/intents/Intents.intentdefinition
+index b0641e7a686c1..fb4bbfc9e1afb 100644
+--- a/ios/chrome/app/intents/Intents.intentdefinition
++++ b/ios/chrome/app/intents/Intents.intentdefinition
+@@ -5,15 +5,15 @@
+ 	<key>INEnums</key>
+ 	<array/>
+ 	<key>INIntentDefinitionModelVersion</key>
+-	<string>1.1</string>
++	<string>1.2</string>
+ 	<key>INIntentDefinitionNamespace</key>
+ 	<string>Oi5136</string>
+ 	<key>INIntentDefinitionSystemVersion</key>
+-	<string>19H2</string>
++	<string>19H15</string>
+ 	<key>INIntentDefinitionToolsBuildVersion</key>
+-	<string>11E708</string>
++	<string>12D4e</string>
+ 	<key>INIntentDefinitionToolsVersion</key>
+-	<string>11.6</string>
++	<string>12.4</string>
+ 	<key>INIntents</key>
+ 	<array>
+ 		<dict>
+@@ -307,6 +307,60 @@
+ 			<key>INIntentVerb</key>
+ 			<string>Open</string>
+ 		</dict>
++		<dict>
++			<key>INIntentCategory</key>
++			<string>information</string>
++			<key>INIntentConfigurable</key>
++			<true/>
++			<key>INIntentDescriptionID</key>
++			<string>lWF6Wa</string>
++			<key>INIntentEligibleForWidgets</key>
++			<true/>
++			<key>INIntentIneligibleForSuggestions</key>
++			<true/>
++			<key>INIntentLastParameterTag</key>
++			<integer>5</integer>
++			<key>INIntentManagedParameterCombinations</key>
++			<dict>
++				<key></key>
++				<dict>
++					<key>INIntentParameterCombinationSupportsBackgroundExecution</key>
++					<true/>
++					<key>INIntentParameterCombinationTitle</key>
++					<string>Open google </string>
++					<key>INIntentParameterCombinationTitleID</key>
++					<string>9sSkkM</string>
++					<key>INIntentParameterCombinationUpdatesLinked</key>
++					<true/>
++				</dict>
++			</dict>
++			<key>INIntentName</key>
++			<string>OpenGoogle</string>
++			<key>INIntentResponse</key>
++			<dict>
++				<key>INIntentResponseCodes</key>
++				<array>
++					<dict>
++						<key>INIntentResponseCodeName</key>
++						<string>success</string>
++						<key>INIntentResponseCodeSuccess</key>
++						<true/>
++					</dict>
++					<dict>
++						<key>INIntentResponseCodeName</key>
++						<string>failure</string>
++					</dict>
++				</array>
++			</dict>
++			<key>INIntentTitle</key>
++			<string>Open Google</string>
++			<key>INIntentTitleID</key>
++			<string>KdpS5x</string>
++			<key>INIntentType</key>
++			<string>Custom</string>
++			<key>INIntentVerb</key>
++			<string>Open</string>
++		</dict>
+ 	</array>
+ 	<key>INTypes</key>
+ 	<array/>

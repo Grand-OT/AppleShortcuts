@@ -1,0 +1,419 @@
+From 1635f8d59e650d38666d32100e35afdfa06fc637 Mon Sep 17 00:00:00 2001
+From: Yaroslav Popov <super.ot96@yandex.ru>
+Date: Thu, 20 May 2021 21:52:21 +0700
+Subject: [PATCH] Presentation version 1
+
+---
+ ios/chrome/app/app_startup_parameters.h       |   5 +
+ .../user_activity_handler.mm                  |  48 +-
+ ios/chrome/app/intents/BUILD.gn               |   3 +-
+ .../app/intents/Intents.intentdefinition      | 142 ++++-
+ .../find_in_page/find_in_page_controller.mm   |   4 +-
+ .../browser/ui/main/scene_controller.mm       |  53 +-
+ log_changes                                   | Bin 0 -> 857930641 bytes
+ log_changes.txt                               | 571 ++++++++++++++++++
+ 8 files changed, 795 insertions(+), 31 deletions(-)
+ create mode 100644 log_changes
+ create mode 100644 log_changes.txt
+
+diff --git a/ios/chrome/app/app_startup_parameters.h b/ios/chrome/app/app_startup_parameters.h
+index c29a76ab40278..e6e57f12c9a91 100644
+--- a/ios/chrome/app/app_startup_parameters.h
++++ b/ios/chrome/app/app_startup_parameters.h
+@@ -17,6 +17,7 @@ enum NTPTabOpeningPostOpeningAction {
+   START_VOICE_SEARCH,
+   START_QR_CODE_SCANNER,
+   OPEN_READING_LIST,
++  SEARCH_IN_PAGE,
+   FOCUS_OMNIBOX,
+   NTP_TAB_OPENING_POST_OPENING_ACTION_COUNT,
+ };
+@@ -41,6 +42,10 @@ class GURL;
+ // as |externalURL|.
+ @property(nonatomic, readonly, assign) const std::vector<GURL>& URLs;
+ 
++@property(nonatomic, readwrite, assign) std::vector<GURL> ReadingListURLs;
++
++@property(nonatomic, readwrite, copy) NSString* textToSearch;
++
+ // The URL query string parameters in the case that the app was launched as a
+ // result of Universal Link navigation. The map associates query string
+ // parameters with their corresponding value.
+diff --git a/ios/chrome/app/application_delegate/user_activity_handler.mm b/ios/chrome/app/application_delegate/user_activity_handler.mm
+index a8649e5f45ceb..62c4db88122ec 100644
+--- a/ios/chrome/app/application_delegate/user_activity_handler.mm
++++ b/ios/chrome/app/application_delegate/user_activity_handler.mm
+@@ -25,6 +25,7 @@
+ #import "ios/chrome/app/intents/OpenInChromeIntent.h"
+ #import "ios/chrome/app/intents/SearchInChromeIntent.h"
+ #import "ios/chrome/app/intents/AddToReadingListIntent.h"
++#import "ios/chrome/app/intents/SearchInPageIntent.h"
+ #import "ios/chrome/app/spotlight/actions_spotlight_manager.h"
+ #import "ios/chrome/app/spotlight/spotlight_util.h"
+ #include "ios/chrome/app/startup/chrome_app_startup_parameters.h"
+@@ -35,7 +36,6 @@
+ #import "ios/chrome/browser/main/browser_list_factory.h"
+ #include "ios/chrome/browser/metrics/first_user_action_recorder.h"
+ #import "ios/chrome/browser/policy/policy_util.h"
+-//#import "ios/chrome/browser/reading_list/offline_page_tab_helper.h"
+ #include "ios/chrome/browser/reading_list/reading_list_model_factory.h"
+ #include "ios/chrome/browser/search_engines/template_url_service_factory.h"
+ #import "ios/chrome/browser/u2f/u2f_tab_helper.h"
+@@ -67,6 +67,7 @@
+ NSString* const kSiriShortcutSearchInChrome = @"SearchInChromeIntent";
+ NSString* const kSiriShortcutOpenInIncognito = @"OpenInChromeIncognitoIntent";
+ NSString* const kSiriShortcutAddToReadingList = @"AddToReadingListIntent";
++NSString* const kSiriShortcutSearchInPage = @"SearchInPageIntent";
+ 
+ // Constants for compatible mode for user activities.
+ NSString* const kRegularMode = @"RegularMode";
+@@ -82,7 +83,8 @@
+ 
+ // Returns the compatible mode array for an user activity.
+ NSArray* CompatibleModeForActivityType(NSString* activityType) {
+-  if ([activityType isEqualToString: kSiriShortcutAddToReadingList] ||
++  if ([activityType isEqualToString: kSiriShortcutSearchInPage] ||
++      [activityType isEqualToString: kSiriShortcutAddToReadingList] ||
+       [activityType isEqualToString: CSSearchableItemActionType] ||
+       [activityType isEqualToString: kShortcutNewSearch] ||
+       [activityType isEqualToString: kShortcutVoiceSearch] ||
+@@ -180,6 +182,34 @@ + (BOOL)continueUserActivity:(NSUserActivity*)userActivity
+       });
+       return YES;
+     }
++  } else if([userActivity.activityType
++             isEqualToString:kSiriShortcutSearchInPage]) {
++      base::RecordAction(UserMetricsAction("IOSLaunchedBySearchInPageIntent"));
++      
++      SearchInPageIntent* intent =
++                  base::mac::ObjCCastStrict<SearchInPageIntent>(
++                  userActivity.interaction.intent);
++      
++      if (!intent) {
++          return NO;
++      }
++      
++      if (!intent.query || !intent.URL) {
++          return NO;
++      }
++      
++      // call search
++      
++      GURL webpageGURL(net::GURLWithNSURL(base::mac::ObjCCastStrict<NSURL>(intent.URL)));
++      
++      AppStartupParameters* startupParams =
++            [[AppStartupParameters alloc] initWithExternalURL:webpageGURL completeURL:webpageGURL];
++        
++      startupParams.postOpeningAction = SEARCH_IN_PAGE;
++      startupParams.textToSearch = [intent.query copy];
++      
++      [connectionInformation setStartupParameters:startupParams];
++        
+   } else if ([userActivity.activityType
+               isEqualToString:kSiriShortcutAddToReadingList]) {
+     base::RecordAction(UserMetricsAction("IOSLaunchedByAddToReadingListIntent"));
+@@ -198,21 +228,11 @@ + (BOOL)continueUserActivity:(NSUserActivity*)userActivity
+   
+       std::vector<GURL> URLs = createGURLVectorFromIntentURLs(intent.url);
+ 
+-      ReadingListModel* readingModel =
+-          ReadingListModelFactory::GetForBrowserState(browserState);
+-      
+-      if (readingModel && readingModel->loaded())
+-          for (auto& URL : URLs){
+-          NSString* title = @"New item";
+-          readingModel->AddEntry(URL, base::SysNSStringToUTF8(title),
+-                                 reading_list::ADDED_VIA_CURRENT_APP);
+-          } else {
+-              sleep(1000);
+-      }
+     AppStartupParameters* startupParams =
+           [[AppStartupParameters alloc] initWithExternalURL:GURL(kChromeUINewTabURL) completeURL:GURL(kChromeUINewTabURL)];
+       
+-      //startupParams.postOpeningAction = OPEN_READING_LIST;
++    startupParams.postOpeningAction = OPEN_READING_LIST;
++    startupParams.ReadingListURLs = std::move(URLs);
+ 
+    [connectionInformation setStartupParameters:startupParams];
+       
+diff --git a/ios/chrome/app/intents/BUILD.gn b/ios/chrome/app/intents/BUILD.gn
+index 14b0e4537ec09..b9b9ca38c7a4f 100644
+--- a/ios/chrome/app/intents/BUILD.gn
++++ b/ios/chrome/app/intents/BUILD.gn
+@@ -10,6 +10,7 @@ intent_definition("intents") {
+     "OpenInChromeIntent",
+     "OpenInChromeIncognitoIntent",
+     "SearchInChromeIntent",
+-    "AddToReadingListIntent"
++    "AddToReadingListIntent",
++    "SearchInPageIntent"
+   ]
+ }
+diff --git a/ios/chrome/app/intents/Intents.intentdefinition b/ios/chrome/app/intents/Intents.intentdefinition
+index 193cf7c4bca3a..f898a8d82f059 100644
+--- a/ios/chrome/app/intents/Intents.intentdefinition
++++ b/ios/chrome/app/intents/Intents.intentdefinition
+@@ -9,7 +9,7 @@
+ 	<key>INIntentDefinitionNamespace</key>
+ 	<string>Oi5136</string>
+ 	<key>INIntentDefinitionSystemVersion</key>
+-	<string>19H524</string>
++	<string>19H1030</string>
+ 	<key>INIntentDefinitionToolsBuildVersion</key>
+ 	<string>12D4e</string>
+ 	<key>INIntentDefinitionToolsVersion</key>
+@@ -372,8 +372,6 @@
+ 					</array>
+ 					<key>INIntentParameterSupportsMultipleValues</key>
+ 					<true/>
+-					<key>INIntentParameterSupportsResolution</key>
+-					<true/>
+ 					<key>INIntentParameterTag</key>
+ 					<integer>10</integer>
+ 					<key>INIntentParameterType</key>
+@@ -405,6 +403,144 @@
+ 			<key>INIntentVerb</key>
+ 			<string>Do</string>
+ 		</dict>
++		<dict>
++			<key>INIntentCategory</key>
++			<string>generic</string>
++			<key>INIntentConfigurable</key>
++			<true/>
++			<key>INIntentDescription</key>
++			<string>Searches text query in defined webpage</string>
++			<key>INIntentDescriptionID</key>
++			<string>SH3VLr</string>
++			<key>INIntentLastParameterTag</key>
++			<integer>3</integer>
++			<key>INIntentManagedParameterCombinations</key>
++			<dict>
++				<key>URL,query</key>
++				<dict>
++					<key>INIntentParameterCombinationSupportsBackgroundExecution</key>
++					<true/>
++					<key>INIntentParameterCombinationTitle</key>
++					<string>Search ${query} in ${URL}</string>
++					<key>INIntentParameterCombinationTitleID</key>
++					<string>pVT0bM</string>
++					<key>INIntentParameterCombinationUpdatesLinked</key>
++					<true/>
++				</dict>
++			</dict>
++			<key>INIntentName</key>
++			<string>SearchInPage</string>
++			<key>INIntentParameterCombinations</key>
++			<dict>
++				<key>URL,query</key>
++				<dict>
++					<key>INIntentParameterCombinationIsLinked</key>
++					<true/>
++					<key>INIntentParameterCombinationSupportsBackgroundExecution</key>
++					<true/>
++					<key>INIntentParameterCombinationTitle</key>
++					<string>Search ${query} in ${URL}</string>
++					<key>INIntentParameterCombinationTitleID</key>
++					<string>O5sNAK</string>
++				</dict>
++			</dict>
++			<key>INIntentParameters</key>
++			<array>
++				<dict>
++					<key>INIntentParameterConfigurable</key>
++					<true/>
++					<key>INIntentParameterDisplayName</key>
++					<string>URL</string>
++					<key>INIntentParameterDisplayNameID</key>
++					<string>A5Ttkc</string>
++					<key>INIntentParameterDisplayPriority</key>
++					<integer>1</integer>
++					<key>INIntentParameterName</key>
++					<string>URL</string>
++					<key>INIntentParameterPromptDialogs</key>
++					<array>
++						<dict>
++							<key>INIntentParameterPromptDialogCustom</key>
++							<true/>
++							<key>INIntentParameterPromptDialogType</key>
++							<string>Configuration</string>
++						</dict>
++						<dict>
++							<key>INIntentParameterPromptDialogCustom</key>
++							<true/>
++							<key>INIntentParameterPromptDialogType</key>
++							<string>Primary</string>
++						</dict>
++					</array>
++					<key>INIntentParameterTag</key>
++					<integer>2</integer>
++					<key>INIntentParameterType</key>
++					<string>URL</string>
++				</dict>
++				<dict>
++					<key>INIntentParameterConfigurable</key>
++					<true/>
++					<key>INIntentParameterDisplayName</key>
++					<string>Query</string>
++					<key>INIntentParameterDisplayNameID</key>
++					<string>QRvZea</string>
++					<key>INIntentParameterDisplayPriority</key>
++					<integer>2</integer>
++					<key>INIntentParameterMetadata</key>
++					<dict>
++						<key>INIntentParameterMetadataCapitalization</key>
++						<string>Sentences</string>
++						<key>INIntentParameterMetadataDefaultValueID</key>
++						<string>Gs9R7n</string>
++					</dict>
++					<key>INIntentParameterName</key>
++					<string>query</string>
++					<key>INIntentParameterPromptDialogs</key>
++					<array>
++						<dict>
++							<key>INIntentParameterPromptDialogCustom</key>
++							<true/>
++							<key>INIntentParameterPromptDialogType</key>
++							<string>Configuration</string>
++						</dict>
++						<dict>
++							<key>INIntentParameterPromptDialogCustom</key>
++							<true/>
++							<key>INIntentParameterPromptDialogType</key>
++							<string>Primary</string>
++						</dict>
++					</array>
++					<key>INIntentParameterTag</key>
++					<integer>3</integer>
++					<key>INIntentParameterType</key>
++					<string>String</string>
++				</dict>
++			</array>
++			<key>INIntentResponse</key>
++			<dict>
++				<key>INIntentResponseCodes</key>
++				<array>
++					<dict>
++						<key>INIntentResponseCodeName</key>
++						<string>success</string>
++						<key>INIntentResponseCodeSuccess</key>
++						<true/>
++					</dict>
++					<dict>
++						<key>INIntentResponseCodeName</key>
++						<string>failure</string>
++					</dict>
++				</array>
++			</dict>
++			<key>INIntentTitle</key>
++			<string>Search In Page</string>
++			<key>INIntentTitleID</key>
++			<string>ALNa8w</string>
++			<key>INIntentType</key>
++			<string>Custom</string>
++			<key>INIntentVerb</key>
++			<string>Do</string>
++		</dict>
+ 	</array>
+ 	<key>INTypes</key>
+ 	<array/>
+diff --git a/ios/chrome/browser/find_in_page/find_in_page_controller.mm b/ios/chrome/browser/find_in_page/find_in_page_controller.mm
+index 3f17e089e884a..59c4f0cace3b7 100644
+--- a/ios/chrome/browser/find_in_page/find_in_page_controller.mm
++++ b/ios/chrome/browser/find_in_page/find_in_page_controller.mm
+@@ -159,9 +159,7 @@ - (void)logFindInPageSearchUKM {
+ 
+ - (void)findStringInPage:(NSString*)query {
+   // Keep track of whether a find is in progress so to avoid running
+-  // JavaScript during disable if unnecessary.
+-  _findStringStarted = YES;
+-  // Save the query in the model before searching. TODO:(crbug.com/963908):
++  // JavaScript during disable if unnecessary.  _findStringStarted = YES;d  // Save the query in the model before searching. TODO:(crbug.com/963908):
+   // Remove as part of refactoring.
+   [self.findInPageModel updateQuery:query matches:0];
+   _findInPageManager->Find(query, web::FindInPageOptions::FindInPageSearch);
+diff --git a/ios/chrome/browser/ui/main/scene_controller.mm b/ios/chrome/browser/ui/main/scene_controller.mm
+index d6d9291fb3e2c..5253534295cf7 100644
+--- a/ios/chrome/browser/ui/main/scene_controller.mm
++++ b/ios/chrome/browser/ui/main/scene_controller.mm
+@@ -3,9 +3,14 @@
+ // found in the LICENSE file.
+ 
+ #import "ios/chrome/browser/ui/main/scene_controller.h"
++#import "ios/chrome/browser/ui/browser_view/browser_coordinator.h"
++#import "ios/chrome/browser/ui/main/browser_view_wrangler.h"
++#import "ios/chrome/browser/ui/commands/find_in_page_commands.h"
+ 
+ #import <MaterialComponents/MaterialSnackbar.h>
+ 
++#include "ios/chrome/browser/find_in_page/find_tab_helper.h"
++
+ #include "base/callback_helpers.h"
+ #include "base/i18n/message_formatter.h"
+ #import "base/ios/ios_util.h"
+@@ -17,6 +22,7 @@
+ #include "components/infobars/core/infobar_manager.h"
+ #include "components/prefs/pref_service.h"
+ #import "components/previous_session_info/previous_session_info.h"
++#include "components/reading_list/core/reading_list_model.h"
+ #include "components/signin/public/base/signin_metrics.h"
+ #include "components/signin/public/identity_manager/identity_manager.h"
+ #include "components/url_formatter/url_formatter.h"
+@@ -45,6 +51,7 @@
+ #include "ios/chrome/browser/crash_report/crash_keys_helper.h"
+ #include "ios/chrome/browser/crash_report/crash_report_helper.h"
+ #import "ios/chrome/browser/crash_report/crash_restore_helper.h"
++#import "ios/chrome/browser/find_in_page/find_tab_helper.h"
+ #import "ios/chrome/browser/first_run/first_run.h"
+ #include "ios/chrome/browser/geolocation/omnibox_geolocation_controller.h"
+ #import "ios/chrome/browser/geolocation/omnibox_geolocation_controller.h"
+@@ -56,6 +63,7 @@
+ #include "ios/chrome/browser/ntp/features.h"
+ #import "ios/chrome/browser/policy/policy_util.h"
+ #import "ios/chrome/browser/policy/policy_watcher_browser_agent.h"
++#include "ios/chrome/browser/reading_list/reading_list_model_factory.h"
+ #include "ios/chrome/browser/screenshot/screenshot_delegate.h"
+ #import "ios/chrome/browser/signin/authentication_service.h"
+ #import "ios/chrome/browser/signin/authentication_service_factory.h"
+@@ -119,6 +127,8 @@
+ #import "net/base/mac/url_conversions.h"
+ #include "ui/base/l10n/l10n_util.h"
+ 
++
++
+ #if !defined(__has_feature) || !__has_feature(objc_arc)
+ #error "This file requires ARC support."
+ #endif
+@@ -1913,16 +1923,39 @@ - (ProceduralBlock)completionBlockForTriggeringAction:
+         [QRHandler showQRScanner];
+       };
+     case OPEN_READING_LIST:
+-          return ^{
+-              if (!self.currentInterface.browser) {
+-                  return;
++      return ^{
++          if (!self.currentInterface.browser) {
++              return;
++          }
++          
++          ReadingListModel* readingModel =
++              ReadingListModelFactory::GetForBrowserState(self.currentInterface.browserState);
++          
++          if (readingModel && readingModel->loaded()) {
++              for (auto& URL : _startupParameters.ReadingListURLs) {
++              NSString* title = @"New item";
++              readingModel->AddEntry(URL, base::SysNSStringToUTF8(title),
++                                     reading_list::ADDED_VIA_CURRENT_APP);
+               }
+-              id<BrowserCommands> handler =
+-              HandlerForProtocol(
+-                self.currentInterface.browser->GetCommandDispatcher(),
+-                    BrowserCommands);
+-              [handler showReadingList];
+-          };
++          }
++      };
++    case SEARCH_IN_PAGE:
++      return ^{
++          if (!self.currentInterface.browser) {
++              return;
++       

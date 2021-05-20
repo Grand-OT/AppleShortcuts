@@ -1,0 +1,104 @@
+From d4d290aadbc2f6765c5d947a40deeb8dd32276a8 Mon Sep 17 00:00:00 2001
+From: Yaroslav Popov <super.ot96@yandex.ru>
+Date: Thu, 1 Apr 2021 19:35:16 +0700
+Subject: [PATCH] Add to reading list doesn't work
+
+---
+ .../core/reading_list_model_impl.cc           |  6 ++---
+ .../user_activity_handler.mm                  | 22 ++++++++++++++-----
+ ios/chrome/app/resources/Info.plist           |  1 +
+ 3 files changed, 21 insertions(+), 8 deletions(-)
+
+diff --git a/components/reading_list/core/reading_list_model_impl.cc b/components/reading_list/core/reading_list_model_impl.cc
+index 2c6f9e5dde984..20f3153958a39 100644
+--- a/components/reading_list/core/reading_list_model_impl.cc
++++ b/components/reading_list/core/reading_list_model_impl.cc
+@@ -333,9 +333,9 @@ const ReadingListEntry& ReadingListModelImpl::AddEntry(
+     const GURL& url,
+     const std::string& title,
+     reading_list::EntrySource source) {
+-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+-  DCHECK(loaded());
+-  DCHECK(IsUrlSupported(url));
++  //DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  //DCHECK(loaded());
++  //DCHECK(IsUrlSupported(url));
+   std::unique_ptr<ReadingListModel::ScopedReadingListBatchUpdate>
+       scoped_model_batch_updates = nullptr;
+   if (GetEntryByURL(url)) {
+diff --git a/ios/chrome/app/application_delegate/user_activity_handler.mm b/ios/chrome/app/application_delegate/user_activity_handler.mm
+index 5f53ba5fa17ce..e957b8941528d 100644
+--- a/ios/chrome/app/application_delegate/user_activity_handler.mm
++++ b/ios/chrome/app/application_delegate/user_activity_handler.mm
+@@ -15,6 +15,8 @@
+ #include "base/strings/sys_string_conversions.h"
+ #include "components/handoff/handoff_utility.h"
+ #include "components/search_engines/template_url_service.h"
++#include "components/reading_list/core/reading_list_model.h"
++
+ #import "ios/chrome/app/app_startup_parameters.h"
+ #import "ios/chrome/app/application_delegate/startup_information.h"
+ #import "ios/chrome/app/application_delegate/tab_opening.h"
+@@ -33,6 +35,8 @@
+ #import "ios/chrome/browser/main/browser_list_factory.h"
+ #include "ios/chrome/browser/metrics/first_user_action_recorder.h"
+ #import "ios/chrome/browser/policy/policy_util.h"
++#import "ios/chrome/browser/reading_list/offline_page_tab_helper.h"
++#include "ios/chrome/browser/reading_list/reading_list_model_factory.h"
+ #include "ios/chrome/browser/search_engines/template_url_service_factory.h"
+ #import "ios/chrome/browser/u2f/u2f_tab_helper.h"
+ #import "ios/chrome/browser/ui/main/browser_interface_provider.h"
+@@ -178,25 +182,33 @@ + (BOOL)continueUserActivity:(NSUserActivity*)userActivity
+     }
+   } else if ([userActivity.activityType
+               isEqualToString:kSiriShortcutOpenGoogle]) {
+-    base::RecordAction(UserMetricsAction("IOSLaunchedByOpenGoogleIntent"));
++    //base::RecordAction(UserMetricsAction("IOSLaunchedByOpenGoogleIntent"));
+     
+   
+     NSURL* googleSearchPageNSURL = [NSURL URLWithString:@"https://google.com"];
+   
+     std::vector<GURL> URLs;
+-    URLs.push_back(net::GURLWithNSURL(googleSearchPageNSURL));
++    //URLs.push_back(net::GURLWithNSURL(googleSearchPageNSURL));
+   
+     AppStartupParameters* startupParams =
+           [[AppStartupParameters alloc] initWithURLs:URLs];
+ 
+    [connectionInformation setStartupParameters:startupParams];
+-   return [self continueUserActivityURLs:URLs
++      
++      ReadingListModel* readingModel =
++          ReadingListModelFactory::GetForBrowserState(browserState);
++      NSString* title = @"google";
++      readingModel->AddEntry(net::GURLWithNSURL(googleSearchPageNSURL), base::SysNSStringToUTF8(title),
++                             reading_list::ADDED_VIA_CURRENT_APP);
++      
++      
++      /*return [self continueUserActivityURLs:URLs
+                      applicationIsActive:applicationIsActive
+                                tabOpener:tabOpener
+                    connectionInformation:connectionInformation
+                       startupInformation:startupInformation
+-                               Incognito:NO];
+-  
++       Incognito:NO];*/return YES;
++      
+   } else if ([userActivity.activityType
+                  isEqualToString:kSiriShortcutSearchInChrome]) {
+     base::RecordAction(UserMetricsAction("IOSLaunchedBySearchInChromeIntent"));
+diff --git a/ios/chrome/app/resources/Info.plist b/ios/chrome/app/resources/Info.plist
+index 5edbd8fcd174e..65e2a894319aa 100644
+--- a/ios/chrome/app/resources/Info.plist
++++ b/ios/chrome/app/resources/Info.plist
+@@ -96,6 +96,7 @@
+ 		<string>OpenInChromeIntent</string>
+ 		<string>OpenInChromeIncognitoIntent</string>
+ 		<string>SearchInChromeIntent</string>
++		<string>OpenGoogleIntent</string>
+ 	</array>
+ 	<key>UIBackgroundModes</key>
+ 	<array>
+-- 
+2.24.3 (Apple Git-128)
+
